@@ -19,6 +19,7 @@ import json
 import sys
 import tempfile
 import time
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -221,18 +222,27 @@ class AnkiWebClient:
     # ---- login --------------------------------------------------------------
     @staticmethod
     def _read_creds() -> tuple[str, str]:
-        if not ENV_FILE.exists():
-            raise AnkiError(f"{ENV_FILE} not found (need ANKI_USERID and ANKI_PASSWORD)")
-        env: dict[str, str] = {}
-        for line in ENV_FILE.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
-        try:
-            return env["ANKI_USERID"], env["ANKI_PASSWORD"]
-        except KeyError as e:
-            raise AnkiError(f"missing {e} in .env") from None
+        # 1. Environment variables take precedence (MCP server sets these via config)
+        user = os.environ.get("ANKI_USERID")
+        pw = os.environ.get("ANKI_PASSWORD")
+        if user and pw:
+            return user, pw
+        # 2. Fall back to .env file next to the script (skill / standalone CLI)
+        if ENV_FILE.exists():
+            env: dict[str, str] = {}
+            for line in ENV_FILE.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    env[k.strip()] = v.strip()
+            try:
+                return env["ANKI_USERID"], env["ANKI_PASSWORD"]
+            except KeyError as e:
+                raise AnkiError(f"missing {e} in .env") from None
+        raise AnkiError(
+            "No credentials found. Set ANKI_USERID/ANKI_PASSWORD env vars "
+            "or create a .env file next to anki.py."
+        )
 
     def login(self) -> None:
         user, pw = self._read_creds()
