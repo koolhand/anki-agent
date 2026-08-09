@@ -41,15 +41,17 @@ Track upstream changes and cherry-pick as needed.
 
 ### Credentials
 
-Create a `.env` file next to `anki.py` (for the skill) or set environment variables (for the MCP server):
+The library checks for credentials in this order:
+
+1. **Environment variables** `ANKI_USERID` and `ANKI_PASSWORD` (used by MCP server)
+2. **`.env` file** next to `anki.py` (used by skill / standalone CLI)
+
+You can use either or both. The simplest approach: create a `.env` file, which works for all three integrations (the MCP server also reads it as a fallback).
 
 ```bash
-# skill/anki/.env
 ANKI_USERID=your_ankiweb_username
 ANKI_PASSWORD=your_ankiweb_password
 ```
-
-Or for the MCP server, set `ANKI_USERID` and `ANKI_PASSWORD` in your environment / the MCP server config.
 
 ### As a Hermes Agent skill
 
