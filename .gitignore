@@ -1,0 +1,19 @@
+# Credentials and sessions — never commit
+.env
+*.env
+cookies*.json
+*.har
+*.skill
+anki_session.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# MCP
+.mcp.json
