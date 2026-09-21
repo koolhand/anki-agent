@@ -59,6 +59,7 @@ Copy or symlink the `skill/anki/` directory into your skills directory:
 
 ```bash
 # Example for Hermes Agent (~/.hermes/skills/)
+# ships SKILL.md, references/ and the CLI in one tree
 cp -r skill/anki ~/.hermes/skills/anki
 cp anki.py ~/.hermes/skills/anki/anki.py
 # Add credentials
@@ -119,6 +120,50 @@ python3 anki.py add_card "hola" "hello" -d "Spanish::Verbs" -n Basic
 python3 anki.py search "deck:Spanish front:hola"
 python3 anki.py update_card 1780339347382 -f "Front=hola (informal)"
 ```
+
+## What's in this repo — and what isn't
+
+This repo is the **API layer only**: how to talk to AnkiWeb's `/svc/` endpoints
+from any agent or script. It is agent-framework-neutral.
+
+| In here | Not in here |
+| --- | --- |
+| Vendored `anki.py` CLI + client library | Your credentials (`.env`, gitignored) |
+| `mcp_server.py` (FastMCP wrapper, 9 tools) | Any particular deck's rules or contents |
+| `skill/anki/SKILL.md` + `references/ankiweb-api.md` | Deck-specific tooling (lint/apply scripts, audit logs) |
+| Install instructions for Hermes and Claude Desktop | Cron jobs |
+
+Deck-specific layers live elsewhere by design: the standards for a particular
+deck belong with that deck, not with the API client. A deck's tooling only ever
+needs `anki.py` from here.
+
+### Portability
+
+- **Portable core:** `anki.py`, `mcp_server.py`, `references/ankiweb-api.md` — pure
+  stdlib Python 3.10+, no Hermes dependency. Any MCP host or shell script can use them.
+- **Portable-ish:** `skill/anki/SKILL.md` — plain markdown using the generic
+  skill convention (`name` + `description` frontmatter, "base directory for this
+  skill" placeholder). It reads as an agent-generic skill; the only
+  framework-specific parts are the install paths and the MCP registration snippet,
+  which are labelled as such in *Setup*.
+- **Hermes-specific:** nothing in the library. The Hermes mentions are install
+  plumbing only, and Claude Desktop is documented alongside so the skill is not
+  tied to one host.
+
+## Keeping an installed copy honest
+
+`anki.py` is a copy, not a symlink, and the skill tree is installed by copy. Any
+installed copy can therefore drift from this repo without anyone noticing, and a
+drifted CLI is the kind of thing that fails months later. The host this was built
+on runs a check (`check-anki-stack.sh`) in its daily drift report that compares the
+installed skill tree against this repo file-for-file and flags any Anki-related
+installed skill with no repo home. If you self-host this, wire the equivalent:
+compare, and treat a difference as a deploy.
+
+Upstream tracking: `anki.py` is vendored from
+[`htlin222/ankiweb-add-card`](https://github.com/htlin222/ankiweb-add-card) (MIT).
+Track upstream changes and cherry-pick what is useful — the vendored file here has
+local modifications, so it is not a drop-in replacement for upstream.
 
 ## ⚠️ Disclaimer
 

@@ -31,6 +31,43 @@ The CLI is pure Python stdlib — no dependencies, no install step.
 Login happens automatically on the first command and is cached; don't run
 `login` unless a command fails with an auth error.
 
+`references/ankiweb-api.md` (in this skill's directory) holds the endpoint map,
+protobuf wire format, discovery methodology and the full operational-quirk list.
+Read it before doing anything unusual with the API, or when adding an endpoint.
+
+## Hard limits
+
+These bite silently, so treat them as constraints, not warnings.
+
+- **Search returns at most 100 rows, whatever the query.** There is no
+  offset/limit field and no truncation marker, so a capped result is
+  indistinguishable from a complete one. **A single search is never an
+  inventory** — never derive a card count, or claim a deck is clean, from one
+  `deck:` query. For true contents, partition by the first character of `Front`,
+  then by the first character of `Back`, and union the buckets (include accented
+  letters, digits and punctuation or those notes are invisible); assert no bucket
+  returned exactly 100, since a capped bucket is truncated too. `search
+  "nid:<note_id>"` is the cheap existence check for one note.
+- **No single-note delete.** `update_card` cannot remove a note and there is no
+  `remove-note` call. To clear unwanted notes out of a deck you are keeping, tag
+  them (e.g. `dup`) so they can be found and deleted in Anki desktop. Never blank
+  a note's fields to "remove" it — that leaves an empty card behind. `remove-deck`
+  deletes the whole deck and its cards.
+- **`get-note-info` costs about a second per note.** A 200-note dump takes
+  minutes: run it as one call with a generous timeout (or in the background with
+  a completion notification), never a tight loop of small calls. Cache the dump —
+  re-fetching notes you already hold is waste.
+- **`rename-deck` to an existing name does not error** — AnkiWeb silently
+  appends `+`. Check the deck list first if the target name might collide.
+- **Test on a throwaway deck.** With no note-delete, test cards are permanent
+  unless the whole deck goes. Create `_tmp_test`, test, then
+  `remove-deck _tmp_test`. Never add test cards to a real deck.
+- **Edits have no undo.** `update_card` overwrites the previous revision and there
+  is no way to fetch it back. For bulk work, write intended changes to an ops file
+  and validate every proposed value against the rule set before applying, print
+  without writing first, then apply one call per note while appending before/after
+  values to a log so every edit stays reversible.
+
 ## Commands
 
 ```bash
