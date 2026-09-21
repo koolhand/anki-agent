@@ -8,6 +8,36 @@ time; use only with an account you own.
 Everything in this file is framework-neutral API knowledge. It belongs with the
 code in this repo, not with any particular agent's skill tree.
 
+## Why talk to `/svc/` directly
+
+**AnkiWeb has no official public API** — the creator has declined to build one.
+All automation falls into one of three approaches:
+
+| Approach | Requires Anki running? | Automated sync? |
+|----------|----------------------|-----------------|
+| AnkiConnect (local HTTP API to the desktop app) | Yes | Yes |
+| `genanki` (offline `.apkg` generation) | No | No — manual import |
+| **Direct AnkiWeb protobuf `/svc/`** (this library) | **No** | **Yes** |
+
+Direct `/svc/` is the only one of the three that works from a headless machine
+with no Anki install *and* writes straight to the account. That is the whole
+reason this library exists: a server or agent can create and edit cards, and the
+user syncs them down to laptop and phone through normal Anki sync.
+
+## Two access paths, same backend
+
+`mcp_server.py` wraps `AnkiWebClient` as MCP tools; `anki.py` exposes the same
+operations as a CLI. Same library, same credentials, two invocation styles:
+
+- **MCP tools** — structured calls, lower token cost, and they work on surfaces
+  with no terminal.
+- **CLI + skill** — costs more per call (the agent reads the skill and builds a
+  shell command) but carries the card-design guidance that shapes *how* cards
+  should be written. The MCP tools only know how to add a card, not what a good
+  one looks like.
+
+Both can coexist. They share one `.env`.
+
 ## Two-domain split
 
 AnkiWeb splits its API across two domains, each with its own session cookie
