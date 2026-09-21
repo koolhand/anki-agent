@@ -55,18 +55,30 @@ ANKI_PASSWORD=your_ankiweb_password
 
 ### As a Hermes Agent skill
 
-Copy or symlink the `skill/anki/` directory into your skills directory:
+`skill/anki/` is a **self-contained skill directory** — SKILL.md, the CLI, the MCP
+server and the API reference all live inside it, so one directory is the whole
+skill.
+
+Two ways to wire it up:
 
 ```bash
-# Example for Hermes Agent (~/.hermes/skills/)
-# ships SKILL.md, references/ and the CLI in one tree
+# (a) Load it straight from a checkout — no installed copy, nothing to drift.
+#     In ~/.hermes/config.yaml:
+skills:
+  external_dirs:
+    - ~/code/anki-agent/skill
+```
+
+```bash
+# (b) Copy it into the profile's skills dir
 cp -r skill/anki ~/.hermes/skills/anki
-cp anki.py ~/.hermes/skills/anki/anki.py
-# Add credentials
 echo 'ANKI_USERID=...' > ~/.hermes/skills/anki/.env
 echo 'ANKI_PASSWORD=...' >> ~/.hermes/skills/anki/.env
 chmod 600 ~/.hermes/skills/anki/.env
 ```
+
+Credentials go in a `.env` next to `anki.py` (gitignored). The library also reads
+`ANKI_USERID` / `ANKI_PASSWORD` from the environment, if that suits your host better.
 
 Restart Hermes. The skill is now available.
 
@@ -84,7 +96,7 @@ pip install mcp
 mcp_servers:
   anki:
     command: "python3"
-    args: ["/absolute/path/to/anki-agent/mcp_server.py"]
+    args: ["/absolute/path/to/anki-agent/skill/anki/mcp_server.py"]
     env:
       ANKI_USERID: "your_username"
       ANKI_PASSWORD: "your_password"
@@ -99,7 +111,7 @@ Restart Hermes. Tools will appear prefixed with `mcp_anki_` (e.g. `mcp_anki_list
   "mcpServers": {
     "anki": {
       "command": "python3",
-      "args": ["/absolute/path/to/anki-agent/mcp_server.py"],
+      "args": ["/absolute/path/to/anki-agent/skill/anki/mcp_server.py"],
       "env": {
         "ANKI_USERID": "your_username",
         "ANKI_PASSWORD": "your_password"
@@ -111,14 +123,15 @@ Restart Hermes. Tools will appear prefixed with `mcp_anki_` (e.g. `mcp_anki_list
 
 ### Standalone CLI
 
-The vendored `anki.py` works as a standalone CLI with no dependencies:
+The vendored `anki.py` works as a standalone CLI with no dependencies (it lives
+inside the skill directory):
 
 ```bash
-python3 anki.py list-decks
-python3 anki.py create_deck "Spanish::Verbs"
-python3 anki.py add_card "hola" "hello" -d "Spanish::Verbs" -n Basic
-python3 anki.py search "deck:Spanish front:hola"
-python3 anki.py update_card 1780339347382 -f "Front=hola (informal)"
+python3 skill/anki/anki.py list-decks
+python3 skill/anki/anki.py create_deck "Spanish::Verbs"
+python3 skill/anki/anki.py add_card "hola" "hello" -d "Spanish::Verbs" -n Basic
+python3 skill/anki/anki.py search "deck:Spanish front:hola"
+python3 skill/anki/anki.py update_card 1780339347382 -f "Front=hola (informal)"
 ```
 
 ## What's in this repo — and what isn't
@@ -128,10 +141,14 @@ from any agent or script. It is agent-framework-neutral.
 
 | In here | Not in here |
 | --- | --- |
-| Vendored `anki.py` CLI + client library | Your credentials (`.env`, gitignored) |
-| `mcp_server.py` (FastMCP wrapper, 9 tools) | Any particular deck's rules or contents |
+| `skill/anki/anki.py` — vendored CLI + client library | Your credentials (`.env`, gitignored) |
+| `skill/anki/mcp_server.py` — FastMCP wrapper, 9 tools | Any particular deck's rules or contents |
 | `skill/anki/SKILL.md` + `references/ankiweb-api.md` | Deck-specific tooling (lint/apply scripts, audit logs) |
 | Install instructions for Hermes and Claude Desktop | Cron jobs |
+
+Everything a skill needs is inside `skill/anki/`, so a consumer can take that one
+directory and have a working skill: the CLI, the MCP server, the instructions and
+the API reference travel together and cannot drift apart.
 
 Deck-specific layers live elsewhere by design: the standards for a particular
 deck belong with that deck, not with the API client. A deck's tooling only ever
@@ -141,7 +158,7 @@ needs `anki.py` from here.
 
 - **Portable core:** `anki.py`, `mcp_server.py`, `references/ankiweb-api.md` — pure
   stdlib Python 3.10+, no Hermes dependency. Any MCP host or shell script can use them.
-- **Portable-ish:** `skill/anki/SKILL.md` — plain markdown using the generic
+- **Portable-ish:** `SKILL.md` — plain markdown using the generic
   skill convention (`name` + `description` frontmatter, "base directory for this
   skill" placeholder). It reads as an agent-generic skill; the only
   framework-specific parts are the install paths and the MCP registration snippet,
@@ -150,15 +167,14 @@ needs `anki.py` from here.
   plumbing only, and Claude Desktop is documented alongside so the skill is not
   tied to one host.
 
-## Keeping an installed copy honest
+## Keeping it honest
 
-`anki.py` is a copy, not a symlink, and the skill tree is installed by copy. Any
-installed copy can therefore drift from this repo without anyone noticing, and a
-drifted CLI is the kind of thing that fails months later. The host this was built
-on runs a check (`check-anki-stack.sh`) in its daily drift report that compares the
-installed skill tree against this repo file-for-file and flags any Anki-related
-installed skill with no repo home. If you self-host this, wire the equivalent:
-compare, and treat a difference as a deploy.
+`skill/anki/` is a complete, self-contained skill: it is loaded straight from this
+checkout (`skills.external_dirs` in the host's config), so there is no installed
+copy that can drift from the repo. Edit here, commit, done — nothing to deploy.
+
+If you do copy it into a profile's skills folder instead, note that a copy *can*
+drift, and compare the two rather than trusting them.
 
 Upstream tracking: `anki.py` is vendored from
 [`htlin222/ankiweb-add-card`](https://github.com/htlin222/ankiweb-add-card) (MIT).
