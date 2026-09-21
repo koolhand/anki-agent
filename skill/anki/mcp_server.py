@@ -24,7 +24,10 @@ import os
 import sys
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+try:  # mcp >= 2.0 renamed FastMCP -> MCPServer (mcp.server.mcpserver)
+    from mcp.server.mcpserver import MCPServer as FastMCP
+except ImportError:  # mcp 1.x
+    from mcp.server.fastmcp import FastMCP
 
 # Import the vendored AnkiWeb client
 sys.path.insert(0, str(Path(__file__).resolve().parent))
