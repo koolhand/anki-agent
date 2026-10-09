@@ -84,19 +84,19 @@ Restart Hermes. The skill is now available.
 
 ### As an MCP server
 
-**Install the MCP SDK** (if not already installed):
-
-```bash
-pip install mcp
-```
+**Recommended: launch with `uv`.** `mcp_server.py` declares its own dependency
+(`mcp`) inline (PEP 723), so `uv run --script` builds and caches a private
+environment for it. That survives the host's Python changing underneath it; a
+bare `python3` command breaks as soon as that interpreter lacks the `mcp` package.
+Without `uv`, run `pip install mcp` into whichever interpreter you name as `command`.
 
 **Register in Hermes** (`~/.hermes/config.yaml`):
 
 ```yaml
 mcp_servers:
   anki:
-    command: "python3"
-    args: ["/absolute/path/to/anki-agent/skill/anki/mcp_server.py"]
+    command: "/absolute/path/to/uv"   # e.g. ~/.local/bin/uv; the gateway's PATH may not include it
+    args: ["run", "--quiet", "--script", "/absolute/path/to/anki-agent/skill/anki/mcp_server.py"]
     env:
       ANKI_USERID: "your_username"
       ANKI_PASSWORD: "your_password"
