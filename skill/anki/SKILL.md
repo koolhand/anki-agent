@@ -98,7 +98,28 @@ python3 "$SKILL/anki.py" rename-deck "Spanish" "Español"
 
 # Remove a deck AND its cards (parent removal also removes subdecks)
 python3 "$SKILL/anki.py" remove-deck "Spanish::Verbs"
+
+# Media: upload files so [sound:name] refs in field values actually play.
+# Idempotent — a file already on AnkiWeb with the same name and content is skipped.
+python3 "$SKILL/anki.py" media-upload media/*.mp3 [--dry-run]
+python3 "$SKILL/anki.py" media-list [--filter tts-] [--json]
+python3 "$SKILL/anki.py" media-download tts-abc123.mp3 -o /tmp/check.mp3
 ```
+
+### `media-upload` — audio and images
+
+Field values hold `[sound:filename.mp3]` / `<img src="filename.jpg">`; the file
+itself lives in the account's media store and is synced separately from the
+collection. `media-upload` puts it there (host-key auth on the sync host, the
+zstd + zip `msync` protocol — endpoint map in `references/ankiweb-api.md`).
+The **basename is the media name**, so prepare files with the final name.
+Requires Python 3.14+ for stdlib zstd; the other commands do not.
+
+- Names are account-global, not per-deck: use content-hashed names
+  (`tts-<sha1-prefix>.mp3`) so two decks can never fight over one file.
+- There is no delete: uploading never removes anything, and a changed file must
+  get a new name (which content hashing gives you for free).
+- Proof it will play: `media-download` the name back and compare sha1.
 
 ### `add_card` flags
 

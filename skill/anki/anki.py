@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import http.cookiejar
+import io
 import json
 import sys
 import tempfile
@@ -23,11 +25,35 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 import zlib
 from pathlib import Path
 
+try:  # stdlib zstd (Python 3.14+); the media-sync endpoints need it
+    from compression import zstd as _zstd
+except ImportError:  # pragma: no cover - older interpreters keep the /svc/ commands
+    _zstd = None
+
+
+def _zstd_required():
+    """The zstd module, or a clear error (media sync is unavailable before 3.14)."""
+    if _zstd is None:  # pragma: no cover
+        raise AnkiError(
+            "media sync needs Python 3.14+ (stdlib compression.zstd); "
+            f"this is {sys.version.split()[0]}"
+        )
+    return _zstd
+
 ANKIWEB = "https://ankiweb.net"
 ANKIUSER = "https://ankiuser.net"
+# Media sync lives on the sync host, not the web app; same account credentials,
+# different auth (a host key instead of session cookies).
+SYNC_BASE = "https://sync.ankiweb.net/"
+SYNC_PROTO = 11
+SYNC_CLIENT = "26.09.3,pylib,linux"
+SYNC_UA = "anki,26.09.3 (pylib) linux:pylib"
+MAX_FILES_PER_ZIP = 25           # server rejects a zip with more than this
+TARGET_ZIP_BYTES = 2_500_000     # client-side soft limit per zip
 # Resolve .env relative to this script (skills run from an arbitrary cwd).
 ENV_FILE = Path(__file__).resolve().parent / ".env"
 # Cache the session in a writable temp dir (the skill dir may be read-only).
@@ -446,6 +472,175 @@ class AnkiWebClient:
 
 
 # --------------------------------------------------------------------------- #
+# Media sync (msync)
+# --------------------------------------------------------------------------- #
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Surface 3xx responses so the caller can re-target at the account shard."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None
+
+
+class MediaSyncClient:
+    """Upload, list and download AnkiWeb media files.
+
+    Media is not part of the collection: AnkiWeb syncs it through `/msync/*`
+    on the account's sync shard, authenticated with a host key (the same
+    credentials, different auth than the web session cookies). This speaks the
+    desktop client's wire format: zstd-compressed bodies, an `anki-sync`
+    header, and a zip whose `_meta` entry names each file.
+
+    The vendored CLI had no way to put a file in the user's media folder, which
+    is why a deck could carry `[sound:x.mp3]` refs that played nowhere.
+    """
+
+    def __init__(self) -> None:
+        self.zstd = _zstd_required()
+        self.base = SYNC_BASE
+        self.key = ""
+        self.session = os.urandom(4).hex()
+        self._opener = urllib.request.build_opener(_NoRedirect())
+
+    # ---- transport ----------------------------------------------------------
+    def _post(self, path: str, payload: bytes, _depth: int = 0) -> bytes:
+        header = json.dumps(
+            {"v": SYNC_PROTO, "k": self.key, "c": SYNC_CLIENT, "s": self.session}
+        )
+        req = urllib.request.Request(
+            self.base + path, data=self.zstd.compress(payload), method="POST"
+        )
+        req.add_header("anki-sync", header)
+        req.add_header("anki-original-size", str(len(payload)))
+        req.add_header("Content-Type", "application/octet-stream")
+        req.add_header("User-Agent", SYNC_UA)
+        try:
+            resp = self._opener.open(req, timeout=300)
+            raw, status, headers = resp.read(), resp.status, resp.headers
+        except urllib.error.HTTPError as e:
+            raw, status, headers = e.read(), e.code, e.headers
+        if status in (301, 302, 303, 307, 308):  # entry host -> account shard
+            loc = headers.get("Location")
+            if _depth > 3 or not loc:
+                raise AnkiError(f"{path}: redirect without a usable Location")
+            self.base = loc if loc.endswith("/") else loc + "/"
+            return self._post(path, payload, _depth + 1)
+        if status != 200:
+            raise AnkiError(f"{path} -> HTTP {status}: {raw[:200].decode(errors='replace')}")
+        if raw[:4] == b"\x28\xb5\x2f\xfd":  # zstd frame
+            raw = self.zstd.decompress(raw)
+        return raw
+
+    @staticmethod
+    def _data(raw: bytes):
+        """Media endpoints wrap their JSON in {"data": …, "err": ""}."""
+        doc = json.loads(raw)
+        if isinstance(doc, dict) and doc.get("err"):
+            raise AnkiError(f"media sync: {doc['err']}")
+        return doc.get("data")
+
+    # ---- protocol -----------------------------------------------------------
+    def login(self) -> None:
+        user, password = AnkiWebClient._read_creds()
+        raw = self._post("sync/hostKey", json.dumps({"u": user, "p": password}).encode())
+        self.key = json.loads(raw)["key"]
+
+    def begin(self) -> int:
+        """Announce the sync and get the server's current media usn."""
+        data = self._data(self._post("msync/begin", json.dumps({"v": SYNC_CLIENT}).encode()))
+        return int(data["usn"])
+
+    def server_media(self, since_usn: int = 0) -> dict[str, tuple[int, str]]:
+        """Every server-side media record as {filename: (usn, sha1)}.
+
+        Walks `msync/mediaChanges` from `since_usn` in the server's batches.
+        A record with an empty sha1 is a deletion, so callers must treat
+        `sha1 == ""` as "absent".
+        """
+        out: dict[str, tuple[int, str]] = {}
+        usn = since_usn
+        while True:
+            batch = self._data(
+                self._post("msync/mediaChanges", json.dumps({"lastUsn": usn}).encode())
+            )
+            if not batch:
+                return out
+            for fname, entry_usn, sha1 in batch:
+                out[fname] = (int(entry_usn), sha1)
+                usn = int(entry_usn)
+
+    @staticmethod
+    def _upload_zip(entries: list[tuple[str, bytes]]) -> bytes:
+        buf = io.BytesIO()
+        meta: list[list[str]] = []
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            for idx, (name, data) in enumerate(entries):
+                slot = str(idx)
+                zf.writestr(slot, data)
+                meta.append([name, slot])
+            zf.writestr("_meta", json.dumps(meta))
+        return buf.getvalue()
+
+    def upload(self, paths: list[str], dry_run: bool = False) -> dict:
+        """Upload files the server doesn't already hold under that name.
+
+        Idempotent: a file whose name and sha1 both match a server record is
+        skipped, so re-running after a partial failure costs nothing.
+        """
+        local = []
+        for p in paths:
+            path = Path(p).expanduser()
+            if not path.is_file():
+                raise AnkiError(f"not a file: {p}")
+            data = path.read_bytes()
+            if not data:
+                raise AnkiError(f"refusing to upload an empty file: {p}")
+            local.append((path.name, data, hashlib.sha1(data).hexdigest()))
+
+        server = self.server_media()
+        todo = [f for f in local if server.get(f[0], (0, ""))[1] != f[2]]
+        report = {
+            "given": len(local),
+            "already_present": len(local) - len(todo),
+            "pending": [f[0] for f in todo],
+            "uploaded": 0,
+            "current_usn": None,
+        }
+        if dry_run or not todo:
+            return report
+
+        i = 0
+        while i < len(todo):
+            chunk: list[tuple[str, bytes, str]] = []
+            size = 0
+            while i < len(todo) and len(chunk) < MAX_FILES_PER_ZIP:
+                name, data, sha1 = todo[i]
+                if chunk and size + len(data) > TARGET_ZIP_BYTES:
+                    break
+                chunk.append(todo[i])
+                size += len(data)
+                i += 1
+            body = self._upload_zip([(n, d) for n, d, _ in chunk])
+            data = self._data(self._post("msync/uploadChanges", body))
+            processed = int(data[0])
+            if processed != len(chunk):
+                raise AnkiError(
+                    f"server processed {processed}/{len(chunk)} files; re-run to finish"
+                )
+            report["uploaded"] += processed
+            report["current_usn"] = int(data[1])
+        return report
+
+    def download(self, names: list[str]) -> dict[str, bytes]:
+        """Fetch media files by name (used to prove a ref will play)."""
+        raw = self._post("msync/downloadFiles", json.dumps({"files": list(names)}).encode())
+        out: dict[str, bytes] = {}
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            for slot, name in json.loads(zf.read("_meta")).items():
+                out[name] = zf.read(slot)
+        return out
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
@@ -486,13 +681,67 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("login", help="Force re-login and refresh the cached session")
     sub.add_parser("list-decks", help="List decks as 'id<TAB>name'")
     sub.add_parser("list-notetypes", help="List notetypes as 'id<TAB>name'")
+
+    # ---- media (sync host, host-key auth) ----------------------------------
+    mu = sub.add_parser(
+        "media-upload",
+        help="Upload media files so [sound:name] refs actually play",
+    )
+    mu.add_argument("files", nargs="+", help="Local file(s); the basename is the media name")
+    mu.add_argument("--dry-run", action="store_true",
+                    help="Report what would be uploaded without uploading")
+
+    ml = sub.add_parser("media-list", help="List server-side media names (filterable)")
+    ml.add_argument("--filter", default="", help="Only names containing this text")
+    ml.add_argument("--json", action="store_true", help="Print JSON {name: sha1}")
+
+    md = sub.add_parser("media-download", help="Download one media file (verification)")
+    md.add_argument("name", help="Media filename as stored, e.g. tts-abc123.mp3")
+    md.add_argument("-o", "--out", required=True, help="Where to write the bytes")
     return p
+
+
+def _run_media(args) -> None:
+    """media-upload / media-list / media-download (sync host, host-key auth)."""
+    media = MediaSyncClient()
+    media.login()
+    if args.cmd == "media-upload":
+        rep = media.upload(args.files, dry_run=args.dry_run)
+        verb = "would upload" if args.dry_run else "uploaded"
+        print(
+            f"{verb} {len(rep['pending'])} of {rep['given']} file(s); "
+            f"{rep['already_present']} already on AnkiWeb"
+        )
+        for name in rep["pending"][:20]:
+            print(f"  {name}")
+        if len(rep["pending"]) > 20:
+            print(f"  … and {len(rep['pending']) - 20} more")
+        if not args.dry_run and rep["uploaded"]:
+            print(f"server media usn now {rep['current_usn']}")
+    elif args.cmd == "media-list":
+        server = media.server_media()
+        rows = {n: sha1 for n, (_usn, sha1) in server.items() if sha1 and args.filter in n}
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=1))
+        else:
+            for name in sorted(rows):
+                print(name)
+        print(f"{len(rows)} media file(s) on the server", file=sys.stderr)
+    else:  # media-download
+        data = media.download([args.name])
+        if args.name not in data:
+            raise AnkiError(f"{args.name} is not in the account's media")
+        Path(args.out).write_bytes(data[args.name])
+        print(f"wrote {len(data[args.name])} bytes -> {args.out}")
 
 
 def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
-    client = AnkiWebClient()
     try:
+        if args.cmd in ("media-upload", "media-list", "media-download"):
+            _run_media(args)
+            return
+        client = AnkiWebClient()
         if args.cmd == "login":
             client.login()
             print(f"logged in; session cached to {SESSION_FILE}")

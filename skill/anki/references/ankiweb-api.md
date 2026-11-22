@@ -118,6 +118,43 @@ API.
 - Response details not fully mapped. Removes the deck **and its cards**; removing
   a parent deck also removes its subdecks.
 
+## Media sync (`/msync/*`, sync host — not protobuf)
+
+Media is **not** part of the collection and has no `/svc/` endpoint: the desktop
+client syncs it separately over `/msync/*` on the account's sync shard, with a
+host key instead of the web session cookies. Implemented in `anki.py` as
+`MediaSyncClient` behind the `media-upload` / `media-list` / `media-download`
+commands.
+
+Wire format is the same as collection sync — `POST <base>msync/<method>`, an
+`anki-sync: {"v":11,"k":"<host key>","c":"<client>","s":"<session>"}` header,
+zstd-compressed body with `anki-original-size`, zstd-compressed response — plus
+a JSON envelope `{"data": …, "err": ""}` (a non-empty `err` is the error).
+
+| Method | Request body | `data` in response |
+| --- | --- | --- |
+| `sync/hostKey` (no key) | `{"u": user, "p": password}` | plain `{"key": "…"}` — the host key |
+| `msync/begin` | `{"v": "<client version>"}` | `{"usn": N, "sk": "<host key back>"}` |
+| `msync/mediaChanges` | `{"lastUsn": N}` | `[[filename, usn, sha1], …]`, at most 1000 per call; loop until `[]` |
+| `msync/uploadChanges` | a zip (below) | `[processed, currentUsn]` |
+| `msync/downloadFiles` | `{"files": [name, …]}` | raw zip bytes (not JSON) |
+
+Upload zip: `ZIP_STORED` entries `"0"`, `"1"`, … holding the file bytes, plus a
+`_meta` entry containing `[[filename, "0"], …]`. Limits: **25 files per zip**,
+2.5 MB target size, 100 MiB per file, filename ≤ 255 bytes and NFC. A deletion
+is encoded as `[filename, null]` — the CLI deliberately implements no delete.
+
+Useful consequences:
+
+- `mediaChanges` from `lastUsn: 0` returns the whole account's media history —
+  cheap enough (a few seconds at ~23k records) and gives an idempotency check:
+  skip any file whose name **and** sha1 already exist, upload the rest.
+- Media names are global to the account, not per-deck, so a content-hashed
+  filename (`tts-<key>.mp3`) can never collide across decks.
+- AnkiWeb answers `/sync/*` and `/msync/*` on the entry host with a 308 to the
+  account shard; re-target `base` and retry. `meta` on the shard answers 400 —
+  it is optional, skip it.
+
 ## Unmapped / potential endpoints
 
 These likely exist (the AnkiWeb web UI supports these actions) but have not been

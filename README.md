@@ -20,12 +20,16 @@ Two integrations included:
 | Search notes (Anki search syntax) | `search_notes` / `search` |
 | Get note details | `get_note_info` / *(internal)* |
 | List note types | `list_notetypes` / `list-notetypes` |
+| Upload media (so `[sound:x.mp3]` plays) | *(CLI only)* `media-upload` |
+| List / fetch server media | *(CLI only)* `media-list`, `media-download` |
 
 ## How it works
 
 AnkiWeb's web app talks to internal protobuf-based `/svc/` endpoints on `ankiweb.net` and `ankiuser.net`. The vendored `anki.py` reverse-engineers these endpoints to create decks, add/edit/search cards, and manage note types — all without a browser or a local Anki install.
 
 The CLI logs in once with your credentials, caches both domain session cookies, and speaks the same wire protocol the AnkiWeb web app uses.
+
+Media is separate: files referenced from fields live in the account's media store and sync over `/msync/*` on the sync shard, authenticated with a host key. `anki.py media-upload` implements that protocol (zstd + zip, 25 files per request), so a `[sound:…]` ref can be made to actually play. That part needs Python 3.14+ for stdlib zstd; the `/svc/` commands stay pure stdlib on 3.10+.
 
 ### Vendored library
 
