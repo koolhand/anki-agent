@@ -88,23 +88,28 @@ Restart Hermes. The skill is now available.
 
 ### As an MCP server
 
-**Recommended: launch with `uv`.** `mcp_server.py` declares its own dependency
-(`mcp`) inline (PEP 723), so `uv run --script` builds and caches a private
-environment for it. That survives the host's Python changing underneath it; a
-bare `python3` command breaks as soon as that interpreter lacks the `mcp` package.
-Without `uv`, run `pip install mcp` into whichever interpreter you name as `command`.
+**Launch it from its own pinned venv.** Build it once with `./skill/anki/install-mcp-env.sh`
+(host python + `requirements.lock`), then point the agent at `.venv/bin/python`.
+
+Do **not** launch a long-lived MCP server with `uv run --script`: that holds
+`~/.cache/uv/.lock` for the life of the process, and while any agent session is up
+the shared uv cache cannot be pruned — it reached 11 GB on this lab's host and no
+cache clean could reclaim it. A venv holds no such lock.
 
 **Register in Hermes** (`~/.hermes/config.yaml`):
 
 ```yaml
 mcp_servers:
   anki:
-    command: "/absolute/path/to/uv"   # e.g. ~/.local/bin/uv; the gateway's PATH may not include it
-    args: ["run", "--quiet", "--script", "/absolute/path/to/anki-agent/skill/anki/mcp_server.py"]
+    command: "/absolute/path/to/anki-agent/skill/anki/.venv/bin/python"
+    args: ["/absolute/path/to/anki-agent/skill/anki/mcp_server.py"]
     env:
       ANKI_USERID: "your_username"
       ANKI_PASSWORD: "your_password"
 ```
+
+Upgrading is `./skill/anki/install-mcp-env.sh` again (it rebuilds from
+`requirements.lock`; regenerate that file with `uv pip freeze` when you mean to move).
 
 Restart Hermes. Tools will appear prefixed with `mcp_anki_` (e.g. `mcp_anki_list_decks`, `mcp_anki_add_card`).
 

@@ -17,3 +17,6 @@ build/
 
 # MCP
 .mcp.json
+
+# Pinned MCP interpreter (install-mcp-env.sh builds it)
+.venv/
